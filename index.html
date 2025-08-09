@@ -1,30 +1,27 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Text CLI Interface</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    body {
-      font-family: 'Inter', sans-serif;
-    }
+    body { font-family: 'Inter', sans-serif; }
   </style>
-
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-512x512.png">
-
 </head>
 <body class="bg-gray-800 flex items-center justify-center min-h-screen p-4">
 
   <div class="flex flex-col h-full bg-gray-900 text-green-400 font-mono p-4 rounded-lg shadow-lg w-full max-w-2xl mx-auto my-8">
-    
     <div class="flex justify-between items-center pb-2 border-b border-gray-700">
       <span class="text-sm">cli-interface.exe</span>
+
+      <!-- REPLACED traffic lights with Save Chat button (same place, UI preserved) -->
       <div class="flex space-x-1">
-        <div class="w-3 h-3 bg-red-500 rounded-full"></div>
-        <div class="w-3 h-3 bg-yellow-500 rounded-full"></div>
-        <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+        <button id="save-ui-btn" class="px-3 py-1 rounded bg-gray-800 text-xs border border-gray-700 hover:bg-gray-700">
+          Save Chat
+        </button>
       </div>
     </div>
 
@@ -42,129 +39,288 @@
         id="input-field"
         class="flex-1 bg-transparent border-none outline-none text-white ml-2"
         autofocus
+        autocomplete="off"
       />
     </div>
   </div>
 
   <script>
-    // --- JavaScript for the CLI App ---
+    // Full CLI app with: ask API key, cookie storage, save/download chat, history, load chat
     document.addEventListener('DOMContentLoaded', () => {
-      // Get DOM elements
+      // DOM
       const inputField = document.getElementById('input-field');
       const outputArea = document.getElementById('output-area');
+      const saveUiBtn = document.getElementById('save-ui-btn');
 
-      // Constants for API interaction
+      // Model & API
       const MODEL_NAME = 'gemini-2.5-flash-preview-05-20';
-      const API_KEY = "AIzaSyD7htSrSo7VTHpmA_PduNBF-m3Xwzafjf0"; // Canvas will provide this at runtime
 
-      // Function to scroll the output area to the bottom
-      const scrollToBottom = () => {
-        outputArea.scrollTop = outputArea.scrollHeight;
-      };
+      // State
+      let API_KEY = getCookie('api_key') || '';
+      let apiKeyEntered = API_KEY !== '';
+      let awaitingSaveName = false;      // when user typed "save", next input is name
+      let awaitingApiKey = !apiKeyEntered; // initial state if no cookie
+      let currentChat = []; // array of {role:'user'|'model', text: '...'}
+      const STORAGE_KEY = 'saved_chats'; // localStorage key for saved chats
 
-      // Function to add a message to the output area
-      const addMessage = (type, text) => {
+      // Helpers
+      const scrollToBottom = () => { outputArea.scrollTop = outputArea.scrollHeight; };
+
+      function addMessage(type, text) {
         const messageDiv = document.createElement('div');
         messageDiv.className = 'flex';
-        
         if (type === 'user') {
-          messageDiv.innerHTML = `<span class="text-blue-400">>>></span><span class="ml-2 text-white">${text}</span>`;
+          messageDiv.innerHTML = `<span class="text-blue-400">>>></span><span class="ml-2 text-white">${escapeHtml(text)}</span>`;
         } else if (type === 'model') {
-          messageDiv.innerHTML = `<span class="text-blue-400">Response:</span><span class="ml-2">${text}</span>`;
+          messageDiv.innerHTML = `<span class="text-blue-400">Response:</span><span class="ml-2">${escapeHtml(text)}</span>`;
         } else if (type === 'loading') {
-           messageDiv.id = 'loading-indicator';
-           messageDiv.innerHTML = `<span class="text-blue-400">Response:</span><span class="ml-2 animate-pulse">Thinking...</span>`;
+          messageDiv.id = 'loading-indicator';
+          messageDiv.innerHTML = `<span class="text-blue-400">Response:</span><span class="ml-2 animate-pulse">Thinking...</span>`;
+        } else if (type === 'system') {
+          messageDiv.innerHTML = `<span class="text-blue-400">System:</span><span class="ml-2 text-gray-300">${escapeHtml(text)}</span>`;
         }
-
         outputArea.appendChild(messageDiv);
         scrollToBottom();
-      };
+      }
 
-      // Function to remove the loading indicator
-      const removeLoadingIndicator = () => {
-        const loadingDiv = document.getElementById('loading-indicator');
-        if (loadingDiv) {
-          loadingDiv.remove();
+      function escapeHtml(s) {
+        return String(s)
+          .replaceAll('&','&amp;')
+          .replaceAll('<','&lt;')
+          .replaceAll('>','&gt;');
+      }
+
+      function removeLoadingIndicator() {
+        const l = document.getElementById('loading-indicator');
+        if (l) l.remove();
+      }
+
+      function setCookie(name, value, days) {
+        let expires = '';
+        if (days) {
+          const d = new Date();
+          d.setTime(d.getTime() + (days*24*60*60*1000));
+          expires = '; expires=' + d.toUTCString();
         }
-      };
+        document.cookie = name + '=' + (value || '') + expires + '; path=/';
+      }
+      function getCookie(name) {
+        const nameEQ = name + '=';
+        const ca = document.cookie.split(';');
+        for (let i=0;i<ca.length;i++) {
+          let c = ca[i];
+          while (c.charAt(0)===' ') c = c.substring(1,c.length);
+          if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length,c.length);
+        }
+        return null;
+      }
 
-      // Handles the API call and response
-      const generateResponse = async (userPrompt) => {
-        addMessage('loading', '');
+      // Saved chats storage helpers
+      function loadSavedChatsObj() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          return raw ? JSON.parse(raw) : {};
+        } catch {
+          return {};
+        }
+      }
+      function saveSavedChatsObj(obj) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+      }
 
-        let chatHistory = [];
-        chatHistory.push({ role: "user", parts: [{ text: userPrompt }] });
+      // Save current chat (localStorage + download JSON)
+      function saveCurrentChatAs(name) {
+        if (!name || name.trim()==='') { addMessage('system','Error: empty name. Save cancelled.'); return; }
+        const safeName = name.trim();
+        const obj = loadSavedChatsObj();
+        obj[safeName] = currentChat.slice(); // clone
+        try {
+          saveSavedChatsObj(obj);
+          // trigger download
+          const blob = new Blob([JSON.stringify({name: safeName, chat: obj[safeName]}, null, 2)], {type:'application/json'});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = safeName.replace(/\s+/g,'_') + '.json';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          addMessage('system','Saved!');
+        } catch (e) {
+          console.error(e);
+          addMessage('system','Error: Could not save chat.');
+        }
+      }
 
-        const payload = {
-          contents: chatHistory,
-        };
+      // Print history list
+      function printHistoryList() {
+        const obj = loadSavedChatsObj();
+        const names = Object.keys(obj);
+        if (names.length===0) {
+          addMessage('system','No saved chats found.');
+          return;
+        }
+        addMessage('system','Saved chats:');
+        names.forEach((n,i) => {
+          addMessage('system', `${i+1}. ${n}`);
+        });
+        addMessage('system','Type the number (e.g. 1) to load that chat.');
+      }
+
+      // Load a saved chat by numeric index (1-based)
+      function loadSavedChatByIndex(idx) {
+        const obj = loadSavedChatsObj();
+        const names = Object.keys(obj);
+        if (idx < 1 || idx > names.length) {
+          addMessage('system','Invalid index.');
+          return;
+        }
+        const name = names[idx-1];
+        const chat = obj[name];
+        if (!Array.isArray(chat)) { addMessage('system','Saved chat corrupted.'); return; }
+        // replace currentChat and render it
+        currentChat = chat.slice();
+        // clear output and show loaded chat
+        outputArea.innerHTML = '';
+        addMessage('system', `Loaded "${name}"`);
+        currentChat.forEach(m => {
+          addMessage(m.role === 'user' ? 'user' : 'model', m.text);
+        });
+      }
+
+      // Add message to currentChat and UI
+      function pushUserMessage(text) {
+        currentChat.push({role:'user', text});
+        addMessage('user', text);
+      }
+      function pushModelMessage(text) {
+        currentChat.push({role:'model', text});
+        addMessage('model', text);
+      }
+
+      // API call
+      async function generateResponse(userPrompt) {
+        if (!API_KEY) {
+          addMessage('system','Error: API key missing. Reload and enter the API key.');
+          return;
+        }
+        addMessage('loading','');
+        // add user to chat (already added by caller)
+        const payload = { contents: [{ role: "user", parts: [{ text: userPrompt }] }] };
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
-
-        let response;
-        let retries = 0;
-        const maxRetries = 5;
-        const initialDelay = 1000; // 1 second
-
-        while (retries < maxRetries) {
-          try {
-            response = await fetch(apiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            });
-
-            if (response.ok) {
-              break; // Success, exit the loop
-            } else if (response.status === 429) {
-              const delay = initialDelay * Math.pow(2, retries);
-              retries++;
-              await new Promise(resolve => setTimeout(resolve, delay));
-            } else {
-              throw new Error(`API error: ${response.statusText}`);
-            }
-          } catch (error) {
-            console.error('Fetch error:', error);
-            retries++;
-            if (retries >= maxRetries) {
-              removeLoadingIndicator();
-              addMessage('model', 'Error: Could not get a response. Please try again later.');
-              return;
-            }
-            const delay = initialDelay * Math.pow(2, retries);
-            await new Promise(resolve => setTimeout(resolve, delay));
-          }
-        }
-
-        if (!response || !response.ok) {
+        try {
+          const resp = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload),
+          });
+          const result = await resp.json();
           removeLoadingIndicator();
-          addMessage('model', 'Error: Failed to get a response after multiple retries.');
+          const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+          const out = text || ('Error: empty response or model not supported by this key.');
+          pushModelMessage(out);
+        } catch (err) {
+          console.error(err);
+          removeLoadingIndicator();
+          pushModelMessage('Error: Could not get a response. ' + (err.message || ''));
+        }
+      }
+
+      // UI Save button behavior (click acts like 'save' command)
+      saveUiBtn.addEventListener('click', () => {
+        // behave like typing 'save' in CLI
+        addMessage('user', 'save');
+        // now ask for name
+        awaitingSaveName = true;
+        addMessage('model', 'chat-name?');
+      });
+
+      // On load: ask for API key if not present
+      if (awaitingApiKey) {
+        addMessage('model','Enter your API key:');
+      }
+
+      // Input handling state machine
+      inputField.addEventListener('keydown', async (ev) => {
+        if (ev.key !== 'Enter') return;
+        const raw = inputField.value.trim();
+        if (raw === '') return;
+        inputField.value = '';
+
+        // If waiting for API key
+        if (awaitingApiKey) {
+          // store in cookie for long time (100 years practically)
+          API_KEY = raw;
+          setCookie('api_key', API_KEY, 365*100); // 100 years
+          awaitingApiKey = false;
+          apiKeyEntered = true;
+          addMessage('user', '[API KEY ENTERED]');
+          addMessage('system','API key saved. You can now type your prompt.');
           return;
         }
 
-        const result = await response.json();
-        removeLoadingIndicator();
-        
-        const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) {
-          addMessage('model', text);
-        } else {
-          addMessage('model', 'I couldn\'t generate a response for that. Can you please rephrase?');
+        // If awaiting a save-name
+        if (awaitingSaveName) {
+          addMessage('user', raw);
+          // try to save
+          try {
+            saveCurrentChatAs(raw);
+          } catch {
+            addMessage('system','Error: save failed.');
+          }
+          awaitingSaveName = false;
+          return;
         }
+
+        // If user typed 'save' command
+        if (raw.toLowerCase() === 'save') {
+          addMessage('user', 'save');
+          awaitingSaveName = true;
+          addMessage('model','chat-name?');
+          return;
+        }
+
+        // history command
+        if (raw.toLowerCase() === 'history') {
+          addMessage('user','history');
+          printHistoryList();
+          return;
+        }
+
+        // A numeric input might mean "load history item number"
+        if (/^\d+$/.test(raw)) {
+          // interpret as history load if there are saved chats
+          const idx = parseInt(raw, 10);
+          const all = Object.keys(loadSavedChatsObj());
+          if (all.length > 0 && idx >= 1 && idx <= all.length) {
+            addMessage('user', raw);
+            loadSavedChatByIndex(idx);
+            return;
+          }
+          // else allow it as normal chat content (fall through)
+        }
+
+        // Otherwise it's a normal chat message:
+        pushUserMessage(raw);
+        // call API
+        generateResponse(raw);
+      });
+
+      // Expose a manual "reset key" hidden method (optional)
+      window._resetApiKey = function() {
+        API_KEY = '';
+        setCookie('api_key','', -1);
+        awaitingApiKey = true;
+        addMessage('system','API key cleared. Reload page or enter new API key now.');
+        addMessage('model','Enter your API key:');
       };
 
-      // Event listener for the input field
-      inputField.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && inputField.value.trim() !== '') {
-          const userMessage = inputField.value.trim();
-          addMessage('user', userMessage);
-          
-          // Clear the input field immediately
-          inputField.value = '';
-
-          // Generate a response from the model
-          generateResponse(userMessage);
-        }
-      });
+      // Also allow clearing saved chats via a command (hidden)
+      window._clearSavedChats = function() {
+        localStorage.removeItem(STORAGE_KEY);
+        addMessage('system','All saved chats removed from localStorage.');
+      };
     });
   </script>
 

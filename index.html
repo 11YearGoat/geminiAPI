@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Text CLI Interface</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+  </style>
+
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-512x512.png">
+
+</head>
+<body class="bg-gray-800 flex items-center justify-center min-h-screen p-4">
+
+  <div class="flex flex-col h-full bg-gray-900 text-green-400 font-mono p-4 rounded-lg shadow-lg w-full max-w-2xl mx-auto my-8">
+    
+    <div class="flex justify-between items-center pb-2 border-b border-gray-700">
+      <span class="text-sm">cli-interface.exe</span>
+      <div class="flex space-x-1">
+        <div class="w-3 h-3 bg-red-500 rounded-full"></div>
+        <div class="w-3 h-3 bg-yellow-500 rounded-full"></div>
+        <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+      </div>
+    </div>
+
+    <div id="output-area" class="flex-1 overflow-y-auto my-4 text-sm whitespace-pre-wrap leading-relaxed" style="min-height: 300px;">
+      <div class="flex">
+        <span class="text-blue-400">Response:</span>
+        <span class="ml-2">Type your message and press Enter.</span>
+      </div>
+    </div>
+
+    <div class="flex items-center pt-2 border-t border-gray-700">
+      <span class="text-blue-400">>>></span>
+      <input
+        type="text"
+        id="input-field"
+        class="flex-1 bg-transparent border-none outline-none text-white ml-2"
+        autofocus
+      />
+    </div>
+  </div>
+
+  <script>
+    // --- JavaScript for the CLI App ---
+    document.addEventListener('DOMContentLoaded', () => {
+      // Get DOM elements
+      const inputField = document.getElementById('input-field');
+      const outputArea = document.getElementById('output-area');
+
+      // Constants for API interaction
+      const MODEL_NAME = 'gemini-2.5-flash-preview-05-20';
+      const API_KEY = ""; // Canvas will provide this at runtime
+
+      // Function to scroll the output area to the bottom
+      const scrollToBottom = () => {
+        outputArea.scrollTop = outputArea.scrollHeight;
+      };
+
+      // Function to add a message to the output area
+      const addMessage = (type, text) => {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'flex';
+        
+        if (type === 'user') {
+          messageDiv.innerHTML = `<span class="text-blue-400">>>></span><span class="ml-2 text-white">${text}</span>`;
+        } else if (type === 'model') {
+          messageDiv.innerHTML = `<span class="text-blue-400">Response:</span><span class="ml-2">${text}</span>`;
+        } else if (type === 'loading') {
+           messageDiv.id = 'loading-indicator';
+           messageDiv.innerHTML = `<span class="text-blue-400">Response:</span><span class="ml-2 animate-pulse">Thinking...</span>`;
+        }
+
+        outputArea.appendChild(messageDiv);
+        scrollToBottom();
+      };
+
+      // Function to remove the loading indicator
+      const removeLoadingIndicator = () => {
+        const loadingDiv = document.getElementById('loading-indicator');
+        if (loadingDiv) {
+          loadingDiv.remove();
+        }
+      };
+
+      // Handles the API call and response
+      const generateResponse = async (userPrompt) => {
+        addMessage('loading', '');
+
+        let chatHistory = [];
+        chatHistory.push({ role: "user", parts: [{ text: userPrompt }] });
+
+        const payload = {
+          contents: chatHistory,
+        };
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
+
+        let response;
+        let retries = 0;
+        const maxRetries = 5;
+        const initialDelay = 1000; // 1 second
+
+        while (retries < maxRetries) {
+          try {
+            response = await fetch(apiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+
+            if (response.ok) {
+              break; // Success, exit the loop
+            } else if (response.status === 429) {
+              const delay = initialDelay * Math.pow(2, retries);
+              retries++;
+              await new Promise(resolve => setTimeout(resolve, delay));
+            } else {
+              throw new Error(`API error: ${response.statusText}`);
+            }
+          } catch (error) {
+            console.error('Fetch error:', error);
+            retries++;
+            if (retries >= maxRetries) {
+              removeLoadingIndicator();
+              addMessage('model', 'Error: Could not get a response. Please try again later.');
+              return;
+            }
+            const delay = initialDelay * Math.pow(2, retries);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+
+        if (!response || !response.ok) {
+          removeLoadingIndicator();
+          addMessage('model', 'Error: Failed to get a response after multiple retries.');
+          return;
+        }
+
+        const result = await response.json();
+        removeLoadingIndicator();
+        
+        const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          addMessage('model', text);
+        } else {
+          addMessage('model', 'I couldn\'t generate a response for that. Can you please rephrase?');
+        }
+      };
+
+      // Event listener for the input field
+      inputField.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && inputField.value.trim() !== '') {
+          const userMessage = inputField.value.trim();
+          addMessage('user', userMessage);
+          
+          // Clear the input field immediately
+          inputField.value = '';
+
+          // Generate a response from the model
+          generateResponse(userMessage);
+        }
+      });
+    });
+  </script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').then(registration => {
+          console.log('Service Worker registered with scope:', registration.scope);
+        }).catch(error => {
+          console.log('Service Worker registration failed:', error);
+        });
+      });
+    }
+  </script>
+
+</body>
+</html>

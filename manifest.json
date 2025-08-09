@@ -1,0 +1,16 @@
+{
+  "name": "Text CLI Interface",
+  "short_name": "CLI App",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "description": "A web-based command-line interface for chatting with a Gemini model.",
+  "icons": [
+    {
+      "src": "icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
